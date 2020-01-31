@@ -46,6 +46,10 @@ class SMSClient:
 		if srcaddr:
 			self.srcaddr = srcaddr
 
+	def send_package(self, currsocket, package):
+		packagestr = SMSServer.create_package(package)
+		currsocket.sendto(packagestr.encode('utf-8'), self.srcaddr)
+
 class SMSServer:
 	def __init__(self, bindaddr, port, buffersize=2048):
 		self.bindaddr = bindaddr
@@ -90,7 +94,7 @@ class SMSServer:
 					package = None
 					
 					try:
-						package = self.read_package(data)
+						package = self.parse_package(data)
 					except ValueError as e:
 						print(f"Falha ao construir pacote de valores: {e}")
 
@@ -106,7 +110,8 @@ class SMSServer:
 									print(f"[{datetime.now()}] Falha na autenticação [{src[0]}:{src[1]}]: Senha incorreta.")
 							else:
 								print(f"[{datetime.now()}] Falha na autenticação [{src[0]}:{src[1]}]: Usuário inexistente.")
-						elif 'id' in package and 'password'
+						elif 'id' in package and 'password' in package:
+
 
 		except KeyboardInterrupt:
 			self.stop()
@@ -114,7 +119,8 @@ class SMSServer:
 	def stop(self):
 		self.soc.close()
 
-	def read_package(self, data):
+	@staticmethod
+	def parse_package(data):
 		ret = {}
 
 		kvs = data.split(';')
@@ -129,5 +135,11 @@ class SMSServer:
 
 		return ret
 
+	@staticmethod
+	def create_package(kwvalues):
+		return ";".join(
+			[f"{key}:{value}" for key, value in kwvalues.items()]
+		)
+
 if __name__ == '__main__':
-	SMSServer('192.168.1.107', 44444).listen()
+	SMSServer('', 44444).listen()
