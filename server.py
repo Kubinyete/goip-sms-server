@@ -1,6 +1,7 @@
 #!/usr/bin/python3
 
 import socket
+import sys
 from datetime import datetime
 
 class SMSAuthClient:
@@ -11,7 +12,7 @@ class SMSAuthClient:
 
 	def authenticate(self, username, password, srcaddr):
 		if username != self.username or password != self.password:
-			return False
+			return None
 
 		c = self.get_client_from(srcaddr)
 
@@ -22,7 +23,7 @@ class SMSAuthClient:
 				srcaddr
 			))
 
-		return True
+		return c
 
 	def get_client_from(self, srcaddr):
 		for c in self.connected:
@@ -66,6 +67,9 @@ class SMSServer:
 			"centralvox": SMSAuthClient('centralvox', 'centralvox')
 		}
 
+	def log(self, message, srcaddr=None, timestamp=datetime.now()):
+		print(f"[{timestamp}] {message}" if srcaddr is None else f"[{timestamp}] <{srcaddr[0]}:{srcaddr[1]}> {message}")
+
 	def listen(self):
 		print(f"Escutando em {self.bindaddr}, porta {self.port}...")
 
@@ -89,33 +93,43 @@ class SMSServer:
 					data = ""
 				
 				if data:
-					print(f"[{datetime.now()}] Recebido dados de [{src[0]}:{src[1]}]:\n{data}")
+					self.log(f"Recebido dados:\n{data}", src)
 
 					package = None
 					
 					try:
 						package = self.parse_package(data)
 					except ValueError as e:
-						print(f"[{datetime.now()}] Falha ao construir pacote de valores de [{src[0]}:{src[1]}]: {e}")
+						self.log(f"Falha ao efetuar parse_package: {e}", src)
 
 					if package:
 						if 'req' in package:
-							# Auth
+							auth_client = None
+							sms_client = None
+
+							# Registro/Keep-alive
 							if package['id'] in self.auth_clients:
-								c = self.auth_clients[package['id']]
-
-								if c.authenticate(package['id'], package['pass'], src):
-									print(f"[{datetime.now()}] Registrado '{package['id']}' em [{src[0]}:{src[1]}].")
+								auth_client = self.auth_clients[package['id']]
+								sms_client = auth_client.authenticate(package['id'], package['pass'], src)
+							
+							if auth_client:
+								if sms_client:
+									self.log(f"Registrado heartbeat do ID '{package['id']}'.", src)
+									
+									sms_client.send_package(self.soc, {
+										"reg": package['req'],
+										"status": 200
+									})
 								else:
-									print(f"[{datetime.now()}] Falha na autenticação [{src[0]}:{src[1]}]: Senha incorreta.")
+									self.log(f"Falha na autenticação do ID '{package['id']}': Senha incorreta.", src)
 							else:
-								print(f"[{datetime.now()}] Falha na autenticação [{src[0]}:{src[1]}]: Usuário inexistente.")
-
+								self.log(f"Falha na autenticação do ID '{package['id']}': Usuário inexistente.", src)
+							
 		except KeyboardInterrupt:
 			self.stop()
 		except KeyError as e:
-			print(f"[{datetime.now()}] Esperado chave do cliente, porém não foi recebida [{src[0]}:{src[1]}]: {e}")
-			
+			self.log(f"Esperado chave do cliente, porém inexistente: {e}")
+
 	def stop(self):
 		self.soc.close()
 
