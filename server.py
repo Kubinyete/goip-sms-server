@@ -96,10 +96,10 @@ class SMSServer:
 					try:
 						package = self.parse_package(data)
 					except ValueError as e:
-						print(f"Falha ao construir pacote de valores: {e}")
+						print(f"[{datetime.now()}] Falha ao construir pacote de valores de [{src[0]}:{src[1]}]: {e}")
 
 					if package:
-						if 'req' in package and 'id' in package and 'pass' in package:
+						if 'req' in package:
 							# Auth
 							if package['id'] in self.auth_clients:
 								c = self.auth_clients[package['id']]
@@ -110,12 +110,12 @@ class SMSServer:
 									print(f"[{datetime.now()}] Falha na autenticação [{src[0]}:{src[1]}]: Senha incorreta.")
 							else:
 								print(f"[{datetime.now()}] Falha na autenticação [{src[0]}:{src[1]}]: Usuário inexistente.")
-						elif 'id' in package and 'password' in package:
-
 
 		except KeyboardInterrupt:
 			self.stop()
-
+		except KeyError as e:
+			print(f"[{datetime.now()}] Esperado chave do cliente, porém não foi recebida [{src[0]}:{src[1]}]: {e}")
+			
 	def stop(self):
 		self.soc.close()
 
