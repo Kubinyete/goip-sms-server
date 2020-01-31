@@ -23,9 +23,8 @@ class SMSAuthClient:
 		if c:
 			c.heartbeat(srcaddr)
 		else:
-			self.connected.append(SMSClient(
-				srcaddr
-			))
+			c = SMSClient(srcaddr)
+			self.connected.append(c)
 
 		return c
 
