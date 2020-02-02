@@ -183,14 +183,22 @@ class SMSServer:
 
 		if SMSServer.is_packet(data):
 			packet = self.parse_packet(data)
-			transaction_id = packet.args[0]
+			transaction_id = None
 
-			for transaction in self.pending_transactions:
-				if transaction.id == transaction_id and transaction.sms_cliemt.srcaddr == src:
-					transaction.set_current_response(packet)
-					transaction.last_time = datetime.timestamp(datetime.now())
-			else:
-				self.log(f"Recebido packet da transação {transaction_id}, porém ela não existe.", src)
+			try:
+				transaction_id = int(packet.args[0])
+			except ValueError:
+				self.log(f"Esperado por valor inteiro representando o ID da transação, porém recebido: {packet.args[0]}.", src)
+			except IndexError as e:
+				self.log(f"Esperado por argumento junto ao packet, porém não recebido: : {e}.", src)
+
+			if transaction_id:
+				for transaction in self.pending_transactions:
+					if transaction.id == transaction_id and transaction.sms_cliemt.srcaddr == src:
+						transaction.set_current_response(packet)
+						transaction.last_time = datetime.timestamp(datetime.now())
+				else:
+					self.log(f"Recebido packet da transação {transaction_id}, porém ela não existe.", src)
 		else:
 			package = self.parse_package(data)
 
