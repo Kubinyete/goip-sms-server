@@ -3,6 +3,7 @@
 import socket
 import sys
 import select
+import random
 from datetime import datetime
 from enum import Enum, auto
 
@@ -62,7 +63,8 @@ class SMSTransaction:
 		return self.last_time + self.timeout > datetime.timestamp(datetime.now())
 
 class SMSAction:
-	AUTO_INCREMENT = 0
+	# @DEBUG: Apenas para testes, retirar isso e começar do 0
+	AUTO_INCREMENT = random.randint(1000, 65000)
 
 	def __init__(self, id, sms_client):
 		self.id = id
@@ -249,27 +251,31 @@ class SMSServer:
 				if currstep and currstep.txpacket:
 					if currstep.txpacket.state is SMSPacketState.SEND:
 						transaction.sms_client.send_packet(currsocket, currstep.txpacket)
+
+						self.log(F"Enviado packet para o cliente: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}", srcaddr=transaction.sms_client.srcaddr)
 					elif currstep.txpacket.state is SMSPacketState.SENT:
 						if currstep.rxpacket:
 							# Verificar o que recebemos
 							received_packet = currstep.rxpacket
 
 							if received_packet.action == "ERROR":
-								self.log(f"Recebido packet de ERROR na transação {transaction.id}, cancelando transação: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
-								self.pending_transactions.remove(transaction)
+								self.log(f"Recebido packet de ERROR na transação {transaction.id}, ignorando: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}, RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
+								#self.pending_transactions.remove(transaction)
+								transaction.pop_current_step()
 							else:
 								if currstep.valid_response():
 									if received_packet.action == "WAIT":
-										self.log(f"Recebido packet de WAIT na transação {transaction.id}, esperando resposta: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
+										self.log(f"Recebido packet de WAIT na transação {transaction.id}, esperando resposta: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}, RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
 										currstep.rxpacket = None
 									else:
 										transaction.pop_current_step()
 								else:
-									self.log(f"Resposta não aprovada na transação {transaction.id}, cancelando transação: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
+									self.log(f"Resposta não aprovada na transação {transaction.id}, cancelando transação: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}, RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
 									self.pending_transactions.remove(transaction)
 				else:
 					# Nenhum pacote na transação?
 					self.log(f"Nenhum pacote na transação {transaction.id}, removendo.", srcaddr=transaction.sms_client.srcaddr)
+					self.pending_transactions.remove(transaction)
 			else:
 				self.log(f"Transação {transaction.id} morta, timeout alcançado.'", srcaddr=transaction.sms_client.srcaddr)
 				self.pending_transactions.remove(transaction)
@@ -325,7 +331,7 @@ class SMSServer:
 						auth_client = self.auth_clients['centralvox']
 						for sms_client in auth_client.connected:
 							if sms_client.is_alive():
-								self.begin_transaction_for(sms_client, SMSAction.get_sendsms_action(sms_client, "Teste", [11111111111]))
+								self.begin_transaction_for(sms_client, SMSAction.get_sendsms_action(sms_client, "Teste", [11222223333]))
 
 		except KeyboardInterrupt:
 			self.log(f"Desligando socket...")
@@ -355,7 +361,8 @@ class SMSServer:
 			"SEND",
 			"OK",
 			"WAIT",
-			"DONE"
+			"DONE",
+			"ERROR"
 		)
 
 	@staticmethod
@@ -368,11 +375,11 @@ class SMSServer:
 			
 			for i in range(len(action.numbers)):
 				steps.append(
-					SMSTransactionStep(SMSPacket("SEND", args=[action.id, i, action.numbers[i]]), None, expected=lambda x: x.action in ("OK", "WAIT"))
+					SMSTransactionStep(SMSPacket("SEND", args=[action.id, i + 1, action.numbers[i]]), None, expected=lambda x: x.action in ("OK", "WAIT"))
 				)
 
 			steps.append(
-				SMSTransactionStep((SMSPacket("DONE", args=[action.id]), None, lambda x: x.action == "DONE"))
+				SMSTransactionStep(SMSPacket("DONE", args=[action.id]), None, lambda x: x.action == "DONE")
 			)
 		else:
 			raise ValueError("Não é possível gerar os passos de uma action desconhecida.")
