@@ -60,7 +60,7 @@ class SMSTransaction:
 		return self.last_time + self.timeout > datetime.timestamp(datetime.now())
 
 class SMSAction:
-	auto_increment = 0
+	AUTO_INCREMENT = 0
 
 	def __init__(self, id, sms_client):
 		self.id = id
@@ -68,12 +68,12 @@ class SMSAction:
 
 	@staticmethod
 	def generate_id():
-		if auto_increment == sys.maxsize:
-			auto_increment = 0
+		if SMSAction.AUTO_INCREMENT == sys.maxsize:
+			SMSAction.AUTO_INCREMENT = 0
 
-		auto_increment += 1
+		SMSAction.AUTO_INCREMENT += 1
 
-		return auto_increment
+		return SMSAction.AUTO_INCREMENT
 
 	@staticmethod
 	def get_sendsms_action(sms_client, message, numbers):
@@ -312,7 +312,7 @@ class SMSServer:
 						for sms_client in auth_client.connected:
 							if sms_client.is_alive():
 								self.begin_transaction_for(sms_client, SMSAction.get_sendsms_action(sms_client, "Teste", [11111111111]))
-								
+
 		except KeyboardInterrupt:
 			self.log(f"Desligando socket...")
 			self.stop()
