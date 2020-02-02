@@ -6,6 +6,8 @@ import select
 from datetime import datetime
 from enum import Enum, auto
 
+def string_values(list):
+	return [str(i) for i in list]
 
 class SMSPacketState(Enum):
 	SEND = auto()
@@ -22,7 +24,7 @@ class SMSPacket:
 		self.state = state
 
 	def generate(self):
-		return self.action.encode('utf-8') + b" " + " ".join([str(a) for a in self.args]).encode('utf-8') + b"\n"
+		return self.action.encode('utf-8') + b" " + " ".join(string_values(self.args)).encode('utf-8') + b"\n"
 
 class SMSTransactionStep:
 	def __init__(self, txpacket, rxpacket=None, expected=lambda x: x.action != "ERROR"):
@@ -263,7 +265,7 @@ class SMSServer:
 									else:
 										transaction.pop_current_step()
 								else:
-									self.log(f"Resposta não aprovada na transação {transaction.id}, cancelando transação: TX: {currstep.txpacket.action} {' '.join(currstep.txpacket.args)}RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
+									self.log(f"Resposta não aprovada na transação {transaction.id}, cancelando transação: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
 									self.pending_transactions.remove(transaction)
 				else:
 					# Nenhum pacote na transação?
