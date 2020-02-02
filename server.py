@@ -22,7 +22,7 @@ class SMSPacket:
 		self.state = state
 
 	def generate(self):
-		return self.action.encode('utf-8') + b" " + " ".join(self.args).encode('utf-8') + b"\n"
+		return self.action.encode('utf-8') + b" " + " ".join([str(a) for a in self.args]).encode('utf-8') + b"\n"
 
 class SMSTransactionStep:
 	def __init__(self, txpacket, rxpacket=None, expected=lambda x: x.action != "ERROR"):
