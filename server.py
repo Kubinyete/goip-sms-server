@@ -184,6 +184,7 @@ class SMSServer:
 		if SMSServer.is_packet(data):
 			packet = self.parse_packet(data)
 			transaction_id = None
+			transaction_valid = False
 
 			try:
 				transaction_id = int(packet.args[0])
@@ -197,9 +198,11 @@ class SMSServer:
 					if transaction.id == transaction_id and transaction.sms_client.srcaddr == src:
 						transaction.set_current_response(packet)
 						transaction.last_time = datetime.timestamp(datetime.now())
-						continue
-
-				self.log(f"Recebido packet da transação {transaction_id}, porém ela não existe.", src)
+						transaction_valid = True
+						break
+			
+			if not transaction_valid:
+				self.log(f"Recebido packet da transação {packet.args[0]}, porém ela não existe.", src)
 		else:
 			package = self.parse_package(data)
 
