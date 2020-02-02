@@ -25,9 +25,13 @@ class SMSPacket:
 		return self.action.encode('utf-8') + b" " + " ".join(self.args).encode('utf-8') + b"\n"
 
 class SMSTransactionStep:
-	def __init__(self, txpacket, rxpacket=None):
+	def __init__(self, txpacket, rxpacket=None, expected=lambda x: x.action != "ERROR"):
 		self.txpacket = txpacket
 		self.rxpacket = rxpacket
+		self.excepted = expected
+
+	def valid_response(self):
+		return self.rxpacket and self.excepted(self.rxpacket)
 
 class SMSTransaction:
 	def __init__(self, id, sms_client, steps, timeout=60):
@@ -147,7 +151,7 @@ class SMSClient:
 		packagestr = SMSServer.create_package(package)
 		currsocket.sendto(packagestr.encode('utf-8'), self.srcaddr)
 
-	def send_packge(self, currsocket, packet):
+	def send_packet(self, currsocket, packet):
 		currsocket.sendto(packet.generate().encode('utf-8'), self.srcaddr)
 		packet.state = SMSPacketState.SENT
 
@@ -173,6 +177,88 @@ class SMSServer:
 		timestamp = datetime.now()
 
 		print(f"[{timestamp}] {message}" if srcaddr is None else f"[{timestamp}] <{srcaddr[0]}:{srcaddr[1]}> {message}")
+
+	def process_data(self, data, src):
+		self.log(f"Recebido dados:\n{data}", src)
+
+		if SMSServer.is_packet(data):
+			packet = self.parse_packet(data)
+			transaction_id = packet.args[0]
+
+			for transaction in self.pending_transactions:
+				if transaction.id == transaction_id and transaction.sms_cliemt.srcaddr == src:
+					transaction.set_current_response(packet)
+					transaction.last_time = datetime.timestamp(datetime.now())
+			else:
+				self.log(f"Recebido packet da transação {transaction_id}, porém ela não existe.", src)
+		else:
+			package = self.parse_package(data)
+
+			# Tentativa de registro/keep-alive
+			if 'req' in package:
+				auth_client = None
+				sms_client = None
+
+				# ID existe?
+				if package['id'] in self.auth_clients:
+					auth_client = self.auth_clients[package['id']]
+					sms_client = auth_client.authenticate(package['id'], package['pass'], src)
+					
+					if sms_client:
+						sms_client.update(package)
+				
+				if auth_client:
+					if sms_client:
+						self.log(f"Registrado heartbeat do ID '{package['id']}'.", src)
+						sms_client.send_package(self.soc, {
+							"reg": package['req'],
+							"status": 200
+						})
+					else:
+						self.log(f"Falha na autenticação do ID '{package['id']}': Senha incorreta.", src)
+						sms_client.send_package(self.soc, {
+							"reg": package['req'],
+							"status": 403
+						})
+				else:
+					self.log(f"Falha na autenticação do ID '{package['id']}': Usuário inexistente.", src)
+					sms_client.send_package(self.soc, {
+							"reg": package['req'],
+							"status": 403
+						})
+
+	def process_pending_transactions(self, currsocket):
+		for transaction in self.pending_transactions:
+			if transaction.is_alive():
+				currstep = transaction.get_current_step()
+
+				if currstep and currstep.txpacket:
+					if currstep.txpacket.state is SMSPacketState.SEND:
+						transaction.sms_client.send_packet(currsocket, currstep.txpacket)
+					elif currstep.txpacket.state is SMSPacketState.SENT:
+						if currstep.rxpacket:
+							# Verificar o que recebemos
+							received_packet = currstep.rxpacket
+
+							if received_packet.action == "ERROR":
+								self.log(f"Recebido packet de ERROR na transação {transaction.id}, cancelando transação: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
+								self.pending_transactions.remove(transaction)
+							else:
+								if currstep.valid_response():
+									if received_packet.action == "WAIT":
+										self.log(f"Recebido packet de WAIT na transação {transaction.id}, esperando resposta: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
+										currstep.rxpacket = None
+									else:
+										transaction.pop_current_step()
+								else:
+									self.log(f"Resposta não aprovada na transação {transaction.id}, cancelando transação: TX: {currstep.txpacket.action} {' '.join(currstep.txpacket.args)}RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
+									self.pending_transactions.remove(transaction)
+				else:
+					# Nenhum pacote na transação?
+					self.log(f"Nenhum pacote na transação {transaction.id}, removendo.", srcaddr=transaction.sms_client.srcaddr)
+			else:
+				self.log(f"Transação {transaction.id} morta, timeout alcançado.'", srcaddr=transaction.sms_client.srcaddr)
+				self.pending_transactions.remove(transaction)
 
 	def listen(self):
 		self.log(f"Escutando em '{self.bindaddr}', porta {self.port}...")
@@ -203,71 +289,21 @@ class SMSServer:
 						data = data.decode('utf-8')
 					
 						if data:
-							self.log(f"Recebido dados:\n{data}", src)
+							self.process_data(data, src)
 
-							package = self.parse_package(data)
-
-							# Tentativa de registro/keep-alive
-							if 'req' in package:
-								auth_client = None
-								sms_client = None
-
-								# ID existe?
-								if package['id'] in self.auth_clients:
-									auth_client = self.auth_clients[package['id']]
-									sms_client = auth_client.authenticate(package['id'], package['pass'], src)
-									
-									if sms_client:
-										sms_client.update(package)
-								
-								if auth_client:
-									if sms_client:
-										self.log(f"Registrado heartbeat do ID '{package['id']}'.", src)
-										sms_client.send_package(self.soc, {
-											"reg": package['req'],
-											"status": 200
-										})
-									else:
-										self.log(f"Falha na autenticação do ID '{package['id']}': Senha incorreta.", src)
-										sms_client.send_package(self.soc, {
-											"reg": package['req'],
-											"status": 403
-										})
-								else:
-									self.log(f"Falha na autenticação do ID '{package['id']}': Usuário inexistente.", src)
-									sms_client.send_package(self.soc, {
-											"reg": package['req'],
-											"status": 403
-										})
 					except UnicodeDecodeError as e:
 						self.log(f"Nao foi possível decodificar os dados recebidos, unicode esperado: {e}", src)
 					except KeyError as e:
 						self.log(f"Esperado chave do cliente, porém inexistente: {e}", src)
 					except SMSServerParseError as e:
-						self.log(f"Falha ao efetuar parse_package: {e}", src)
+						self.log(f"Falha ao efetuar parse_package/parse_packet: {e}", src)
 				else:
 					consecutive_packages = 0
 
 					# Verificar se existem solicitações de SMS a serem enviadas
 					# @DEBUG: Apenas para teste
-
-					for transaction in self.pending_transactions:
-						if transaction.is_alive():
-							currstep = transaction.get_current_step()
-
-							if currstep.txpacket:
-								if currstep.txpacket.state is SMSPacketState.SEND:
-									transaction.sms_client.send_packet(currstep.txpacket)
-								elif currstep.txpacket.state is SMSPacketState.SENT:
-									if currstep.rxpacket:
-										# Verificar o que recebemos
-										pass
-							else:
-								# Nenhum pacote na transação?
-								self.log(f"Nenhum pacote na transação para o cliente, removendo.", srcaddr=transaction.sms_client.srcaddr)
-						else:
-							self.log(f"Transação morta, timeout alcançado.'", srcaddr=transaction.sms_client.srcaddr)
-							self.pending_transactions.remove(transaction)
+					
+					self.process_pending_transactions(self.soc)
 
 					if debug and self.auth_clients['centralvox'].connected:
 						debug = False
@@ -289,32 +325,56 @@ class SMSServer:
 		self.pending_transactions.append(transaction)
 
 	@staticmethod
-	def generate_steps_for(action):
-		steps = None
+	def is_packet(data):
+		action = ""
 
+		for c in data:
+			if c == ' ':
+				break
+
+			action += c
+
+		return action in (
+			"PASSWORD",
+			"SEND",
+			"OK",
+			"WAIT",
+			"DONE"
+		)
+
+	@staticmethod
+	def generate_steps_for(action):
 		if isinstance(action, SendSMSAction):
 			steps = [
-				SMSPacket("MSG", args=[action.id, len(action.message.encode('utf-8')), action.message]),
-				SMSPacket("PASSWORD", args=[action.id, action.sms_client.auth_client.password]),
+				SMSTransactionStep(SMSPacket("MSG", args=[action.id, len(action.message.encode('utf-8')), action.message]), None, lambda x: x.action == "PASSWORD"),
+				SMSTransactionStep(SMSPacket("PASSWORD", args=[action.id, action.sms_client.auth_client.password]), None, lambda x: x.action == "SEND"),
 			]
 			
 			for i in range(len(action.numbers)):
 				steps.append(
-					SMSPacket("SEND", args=[action.id, i, action.numbers[i]])
+					SMSTransactionStep(SMSPacket("SEND", args=[action.id, i, action.numbers[i]]), None, expected=lambda x: x.action in ("OK", "WAIT"))
 				)
 
 			steps.append(
-				SMSPacket("DONE", args=[action.id])
+				SMSTransactionStep((SMSPacket("DONE", args=[action.id]), None, lambda x: x.action == "DONE"))
 			)
+		else:
+			raise ValueError("Não é possível gerar os passos de uma action desconhecida.")
 
-		# @PERFORMANCE: Estamos iterando novamente, desnecessário, porém mais prático para montar as estruturas de pacote acima
-		# remover isso no futuro.
-		if steps:
-			for packet in steps:
-				return [
-					SMSTransactionStep(packet)
-				]
-		
+		return steps
+
+	@staticmethod
+	def parse_packet(data):
+		split = data.split(" ")
+
+		if len(split) > 1:
+			return SMSPacket(
+				split[0], 
+				args=split[1:], 
+				state=SMSPacketState.RECEIVED
+			)
+		else:
+			raise SMSServerParseError("Recebido packet incompleto, faltando argumentos.")
 
 	@staticmethod
 	def parse_package(data):
