@@ -259,6 +259,11 @@ class SMSServer:
 			"centralvox": SMSAuthClient('centralvox', 'centralvox')
 		}
 
+	def do_refresh(self):
+		#self.fetch_authorized_clients()
+		#self.fetch_requests()
+		self.log("Recebido signal SIGUSR1, efetuar do_refresh()")
+
 	def log(self, message, srcaddr=None):
 		timestamp = datetime.now()
 
