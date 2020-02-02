@@ -152,7 +152,7 @@ class SMSClient:
 		currsocket.sendto(packagestr.encode('utf-8'), self.srcaddr)
 
 	def send_packet(self, currsocket, packet):
-		currsocket.sendto(packet.generate().encode('utf-8'), self.srcaddr)
+		currsocket.sendto(packet.generate(), self.srcaddr)
 		packet.state = SMSPacketState.SENT
 
 class SMSServer:
