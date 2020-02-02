@@ -194,7 +194,7 @@ class SMSServer:
 
 			if transaction_id:
 				for transaction in self.pending_transactions:
-					if transaction.id == transaction_id and transaction.sms_cliemt.srcaddr == src:
+					if transaction.id == transaction_id and transaction.sms_client.srcaddr == src:
 						transaction.set_current_response(packet)
 						transaction.last_time = datetime.timestamp(datetime.now())
 				else:
@@ -328,8 +328,8 @@ class SMSServer:
 	def stop(self):
 		self.soc.close()
 
-	def begin_transaction_for(self, sms_cliemt, action, timeout=60):
-		transaction = SMSTransaction(action.id, sms_cliemt, self.generate_steps_for(action), timeout=timeout)
+	def begin_transaction_for(self, sms_client, action, timeout=60):
+		transaction = SMSTransaction(action.id, sms_client, self.generate_steps_for(action), timeout=timeout)
 		self.pending_transactions.append(transaction)
 
 	@staticmethod
