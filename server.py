@@ -260,9 +260,12 @@ class SMSServer:
 		}
 
 	def do_refresh(self):
+        # No futuro, puxar os novos pedidos de envio de SMS em algum lugar, tipo banco de dados local ou remoto (Ex: SQLite ou MySQL) ou usar o próprio sistema de arquivos
+        
 		#self.fetch_authorized_clients()
 		#self.fetch_requests()
 		self.log("Recebido signal SIGUSR1, efetuar do_refresh()")
+
 
 	def log(self, message, srcaddr=None):
 		timestamp = datetime.now()
