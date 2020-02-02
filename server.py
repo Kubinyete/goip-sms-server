@@ -34,8 +34,8 @@ class SMSTransactionStep:
 		return self.rxpacket and self.excepted(self.rxpacket)
 
 class SMSTransaction:
-	def __init__(self, id, sms_client, steps, timeout=60):
-		self.id = id
+	def __init__(self, tid, sms_client, steps, timeout=60):
+		self.id = tid
 		self.sms_client = sms_client
 		self.steps = steps
 		self.timeout = timeout
@@ -197,8 +197,9 @@ class SMSServer:
 					if transaction.id == transaction_id and transaction.sms_client.srcaddr == src:
 						transaction.set_current_response(packet)
 						transaction.last_time = datetime.timestamp(datetime.now())
-				else:
-					self.log(f"Recebido packet da transação {transaction_id}, porém ela não existe.", src)
+						continue
+
+				self.log(f"Recebido packet da transação {transaction_id}, porém ela não existe.", src)
 		else:
 			package = self.parse_package(data)
 
@@ -329,6 +330,8 @@ class SMSServer:
 		self.soc.close()
 
 	def begin_transaction_for(self, sms_client, action, timeout=60):
+		self.log(f"Iniciando transação {action.id} para {type(action).__name__}, message='{action.message}', numbers={action.numbers}", srcaddr=sms_client.srcaddr)
+
 		transaction = SMSTransaction(action.id, sms_client, self.generate_steps_for(action), timeout=timeout)
 		self.pending_transactions.append(transaction)
 
