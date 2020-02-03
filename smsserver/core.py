@@ -1,9 +1,9 @@
 #!/usr/bin/python3
-
 import socket
 import sys
 import select
 import time
+import logging
 import sqlite3
 from datetime import datetime
 from enum import Enum, auto
@@ -153,7 +153,7 @@ class SMSTransaction:
 
 class SMSAction:
     # @DEBUG: Apenas para testes, retirar isso e começar do 0
-    AUTO_INCREMENT = 1
+    AUTO_INCREMENT = 0
 
     def __init__(self, id, sms_client):
         self.id = id
@@ -260,7 +260,7 @@ class SMSClient:
         packet.state = SMSPacketState.SENT
 
 class SMSServer:
-    def __init__(self, bindaddr, port, buffersize=2048, database='smsserver.db'):
+    def __init__(self, bindaddr, port, buffersize=2048, database='smsserver.db', logfile=''):
         self.bindaddr = bindaddr
         self.port = port
         self.soc = None
@@ -271,6 +271,14 @@ class SMSServer:
         self.pending_transactions = []
     
         self.max_consecutive_packages = 5
+
+        if logfile:
+            logging.basicConfig(
+                filename=logfile,
+                format="[%(asctime)s] %(levelname)s -> %(message)s",
+                datefmt="%d/%m/%Y %H:%M:%S",
+                level=logging.DEBUG
+            )
         
         self.do_refresh()
 
@@ -342,15 +350,13 @@ class SMSServer:
             self.fetch_authorized_clients(conn)
             self.fetch_requests(conn)
         except sqlite3.Error as e:
-            self.log(f"Não foi possível conectar-se ao banco de dados local '{self.database}': {e}")
+            self.log(f"Não foi possível conectar-se ao banco de dados local '{self.database}': {e}", level=logging.ERROR)
         finally:
             if conn:
                 conn.close()
 
-    def log(self, message, srcaddr=None):
-        timestamp = datetime.now()
-
-        print(f"[{timestamp}] {message}" if srcaddr is None else f"[{timestamp}] <{srcaddr[0]}:{srcaddr[1]}> {message}")
+    def log(self, message, srcaddr=None, level=logging.DEBUG):
+        logging.log(level, f"<{srcaddr[0]}:{srcaddr[1]}> {message}" if srcaddr else message)
 
     def process_data(self, data, src):
         self.log(f"Recebido dados:\n{data}", src)
@@ -363,9 +369,9 @@ class SMSServer:
             try:
                 transaction_id = int(packet.args[0])
             except ValueError:
-                self.log(f"Esperado por valor inteiro representando o ID da transação, porém recebido: {packet.args[0]}.", src)
+                self.log(f"Esperado por valor inteiro representando o ID da transação, porém recebido: {packet.args[0]}.", src, level=logging.WARNING)
             except IndexError as e:
-                self.log(f"Esperado por argumento junto ao packet, porém não recebido: : {e}.", src)
+                self.log(f"Esperado por argumento junto ao packet, porém não recebido: : {e}.", src, level=logging.WARNING)
 
             if transaction_id:
                 for transaction in self.pending_transactions:
@@ -373,14 +379,14 @@ class SMSServer:
                         try:
                             transaction.set_current_response(packet)
                         except ValueError as e:
-                            self.log(f"Esperado por argumento junto ao packet de um certo tipo, porém não recebido: : {e}.", src)
+                            self.log(f"Esperado por argumento junto ao packet de um certo tipo, porém não recebido: : {e}.", src, level=logging.WARNING)
 
                         transaction.last_time = datetime.timestamp(datetime.now())
                         transaction_valid = True
                         break
             
             if not transaction_valid:
-                self.log(f"Recebido packet da transação {packet.args[0]}, porém ela não existe.", src)
+                self.log(f"Recebido packet da transação {packet.args[0]}, porém ela não existe.", src, level=logging.INFO)
         else:
             package = self.parse_package(data)
 
@@ -399,19 +405,19 @@ class SMSServer:
                 
                 if auth_client:
                     if sms_client:
-                        self.log(f"Registrado heartbeat do ID '{package['id']}'.", src)
+                        self.log(f"Registrado heartbeat do ID '{package['id']}'.", src, level=logging.INFO)
                         sms_client.send_package(self.soc, {
                             "reg": package['req'],
                             "status": 200
                         })
                     else:
-                        self.log(f"Falha na autenticação do ID '{package['id']}': Senha incorreta.", src)
+                        self.log(f"Falha na autenticação do ID '{package['id']}': Senha incorreta.", src, level=logging.INFO)
                         sms_client.send_package(self.soc, {
                             "reg": package['req'],
                             "status": 403
                         })
                 else:
-                    self.log(f"Falha na autenticação do ID '{package['id']}': Usuário inexistente.", src)
+                    self.log(f"Falha na autenticação do ID '{package['id']}': Usuário inexistente.", src, level=logging.INFO)
                     sms_client.send_package(self.soc, {
                             "reg": package['req'],
                             "status": 403
@@ -426,16 +432,16 @@ class SMSServer:
                     self.process_transaction_step(currsocket, transaction, currstep)
                 else:
                     # Nenhum pacote na transação?
-                    self.log(f"Nenhum pacote na transação {transaction.id}, removendo.", srcaddr=transaction.sms_client.srcaddr)
+                    self.log(f"Nenhum pacote na transação {transaction.id}, removendo.", srcaddr=transaction.sms_client.srcaddr, level=logging.INFO)
                     self.pending_transactions.remove(transaction)
             else:
-                self.log(f"Transação {transaction.id} morta, timeout alcançado.'", srcaddr=transaction.sms_client.srcaddr)
+                self.log(f"Transação {transaction.id} morta, timeout alcançado.'", srcaddr=transaction.sms_client.srcaddr, level=logging.INFO)
                 self.pending_transactions.remove(transaction)
 
     def process_transaction_step(self, currsocket, transaction, currstep):
         if isinstance(currstep, SMSTransactionBundle):
             if currstep.valid_response():
-                self.log(F"Finalizando SMSTransactionBundle: {currstep}", srcaddr=transaction.sms_client.srcaddr)
+                self.log(F"Finalizando SMSTransactionBundle: {currstep}", srcaddr=transaction.sms_client.srcaddr, level=logging.INFO)
                 transaction.pop_current_step()
             else:
                 previous = None
@@ -494,7 +500,7 @@ class SMSServer:
                                 self.pending_transactions.remove(transaction)
 
     def listen(self):
-        self.log(f"Escutando em '{self.bindaddr}', porta {self.port}...")
+        self.log(f"Escutando em '{self.bindaddr}', porta {self.port}...", level=logging.INFO)
 
         self.soc = socket.socket(
             socket.AF_INET,         # IPV4
@@ -524,11 +530,11 @@ class SMSServer:
                             self.process_data(data, src)
 
                     except UnicodeDecodeError as e:
-                        self.log(f"Nao foi possível decodificar os dados recebidos, unicode esperado: {e}", src)
+                        self.log(f"Nao foi possível decodificar os dados recebidos, unicode esperado: {e}", src, level=logging.WARNING)
                     except KeyError as e:
-                        self.log(f"Esperado chave do cliente, porém inexistente: {e}", src)
+                        self.log(f"Esperado chave do cliente, porém inexistente: {e}", src, level=logging.WARNING)
                     except SMSServerParseError as e:
-                        self.log(f"Falha ao efetuar parse_package/parse_packet: {e}", src)
+                        self.log(f"Falha ao efetuar parse_package/parse_packet: {e}", src, level=logging.WARNING)
                 else:
                     consecutive_packages = 0
 
@@ -537,7 +543,7 @@ class SMSServer:
                     time.sleep(.1)
 
         except KeyboardInterrupt:
-            self.log(f"Desligando socket...")
+            self.log(f"Desligando socket", level=logging.INFO)
             self.stop()
 
     def stop(self):
@@ -548,8 +554,6 @@ class SMSServer:
 
         transaction = SMSTransaction(action.id, sms_client, self.generate_steps_for(action), timeout=timeout)
         self.pending_transactions.append(transaction)
-
-        self.log(f"Criado transação {action.id}: {transaction}", srcaddr=sms_client.srcaddr)
 
     @staticmethod
     def is_packet(data):

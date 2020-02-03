@@ -6,12 +6,15 @@ import sqlite3
 from daemons.prefab import run
 from smsserver.core import SMSServer
 
-SMSSERVER_DB      = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'smsserver.db')
-SMSSERVER_PIDFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'smsserver.pid')
+SMSSERVER_DIR     = os.path.dirname(os.path.abspath(__file__))
+SMSSERVER_DB      = os.path.join(SMSSERVER_DIR, 'smsserver.db')
+SMSSERVER_PIDFILE = os.path.join(SMSSERVER_DIR, 'smsserver.pid')
+SMSSERVER_LOGFILE = os.path.join(SMSSERVER_DIR, 'smsserver.log')
+
 
 class SMSServerDaemon(run.RunDaemon):
     def run(self):
-        s = SMSServer('', 44444, database=SMSSERVER_DB)
+        s = SMSServer('', 44444, database=SMSSERVER_DB, logfile=SMSSERVER_LOGFILE)
 
         # Ao recebermos o sinal SIGUSR1, faremos "reload" da aplicação
         # Ex: ao chegar um pedido de envio de SMS novo ou para atualizar as configurações internas
