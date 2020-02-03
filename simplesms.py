@@ -75,7 +75,13 @@ CREATE TABLE IF NOT EXISTS sms_request (
                 assert con
 
                 cur = con.cursor()
-                cur.execute("INSERT INTO sms_client (username, password) VALUES (?, ?)", (sys.argv[2], sys.argv[3]))
+                cur.execute("INSERT INTO sms_client (username, password) VALUES (?, ?)", 
+                    (
+                        sys.argv[2], 
+                        sys.argv[3]
+                    )
+                )
+
                 con.commit()
                 con.close()
         elif action == "userlist":
@@ -101,13 +107,20 @@ CREATE TABLE IF NOT EXISTS sms_request (
                 assert con
 
                 cur = con.cursor()
-                cur.execute("INSERT INTO sms_request (username, number, message) VALUES (?, ?, ?)", (sys.argv[2], sys.argv[3], ' '.join(sys.argv[4:])))
+                cur.execute("INSERT INTO sms_request (username, number, message) VALUES (?, ?, ?)", 
+                    (
+                        sys.argv[2], 
+                        sys.argv[3], 
+                        ' '.join(sys.argv[4:])
+                    )
+                )
+
                 con.commit()
                 con.close()
 
                 print("Enviando SIGUSR1 para o processo em execução...")
                 os.kill(d.pid, signal.SIGUSR1)
-        elif action == "requests":
+        elif action == "listsms":
             con = create_connection()
             assert con
 
@@ -117,7 +130,7 @@ CREATE TABLE IF NOT EXISTS sms_request (
             
             while row:
                 for column in row:
-                    print(F"{column} ", end='')
+                    print(F"{column}, ", end='')
                 print()
                 row = cur.fetchone()
             
@@ -125,4 +138,4 @@ CREATE TABLE IF NOT EXISTS sms_request (
         else:
             print(f"Operação '{action}' inválida.")
     else:
-        print(f"Uso:\n\n{sys.argv[0]} <start|stop|restart|refresh|createdb|useradd|userlist|sendsms|requests>")
+        print(f"Uso:\n\n{sys.argv[0]} <start|stop|restart|refresh|createdb|useradd|userlist|sendsms|listsms>")
