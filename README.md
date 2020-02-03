@@ -31,7 +31,7 @@ Para começar será necessário inicializar o banco de dados SQLite local:
 vitor@ubuntu $ ./launcher.py db create
 ```
 
-Feito isso, será preciso adicionar pelomenos um usuário para autenticação:
+Feito isso, será preciso adicionar pelo menos um usuário para autenticação:
 
 ```sh
 vitor@ubuntu $ ./launcher.py db useradd meuusuario minhasenha
