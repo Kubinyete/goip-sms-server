@@ -97,7 +97,9 @@ def db_createrequest(auth, number, text):
 def cli_dbmanager(args):
     act = '' if len(args) < 2 else args[1]
 
-    if act == "useradd":
+    if act == "create":
+        db_createdb()
+    elif act == "useradd":
         if len(args) < 4:
             fatal(f"É preciso informar <username> e <password>")
 
@@ -110,7 +112,7 @@ def cli_dbmanager(args):
     else:
         print(f"Uso:\n\n")
 
-        for use in ("useradd <username> <password>","userlist"):
+        for use in ("create","useradd <username> <password>","userlist"):
             print(f"{sys.argv[0]} {args[0]} {use}")
 
 def cli_smsmanager(args, d):
