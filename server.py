@@ -249,7 +249,7 @@ class SMSClient:
         packet.state = SMSPacketState.SENT
 
 class SMSServer:
-    def __init__(self, bindaddr, port, buffersize=2048, max_consecutive_packages=3, database='smsserver.db'):
+    def __init__(self, bindaddr, port, buffersize=2048, database='smsserver.db'):
         self.bindaddr = bindaddr
         self.port = port
         self.soc = None
@@ -259,7 +259,7 @@ class SMSServer:
         self.auth_clients = {}
         self.pending_transactions = []
     
-        self.max_consecutive_packages = max_consecutive_packages
+        self.max_consecutive_packages = 5
         
         self.do_refresh()
 
@@ -306,13 +306,16 @@ class SMSServer:
 
                 row = cur.fetchone()
 
+            conn.commit()
             updt.close()
             cur.close()
 
     def do_refresh(self):
+        conn = None
+    
         try:
             conn = sqlite3.connect(
-                database=self.database,
+                self.database,
                 timeout=5
             )
 
@@ -323,7 +326,6 @@ class SMSServer:
         finally:
             if conn:
                 conn.close()
-
 
     def log(self, message, srcaddr=None):
         timestamp = datetime.now()
@@ -484,7 +486,6 @@ class SMSServer:
         )
 
         consecutive_packages = 0
-        debug = True
 
         try:
             while True:
@@ -511,18 +512,7 @@ class SMSServer:
                 else:
                     consecutive_packages = 0
 
-                    # Verificar se existem solicitações de SMS a serem enviadas
-                    # @DEBUG: Apenas para teste
-                    
                     self.process_pending_transactions(self.soc)
-
-                    if debug and len(self.auth_clients['centralvox'].connected) == 2:
-                        debug = False
-
-                        auth_client = self.auth_clients['centralvox']
-                        for sms_client in auth_client.connected:
-                            if sms_client.is_alive():
-                                self.begin_transaction_for(sms_client, SMSAction.get_sendsms_action(sms_client, "Olá mundo #2!", [11222223333]))
 
         except KeyboardInterrupt:
             self.log(f"Desligando socket...")

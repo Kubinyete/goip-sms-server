@@ -6,11 +6,12 @@ import sqlite3
 from server import SMSServer
 from daemons.prefab import run
 
-SMSSERVER_DB = 'smsserver.db'
+SMSSERVER_DB      = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'smsserver.db')
+SMSSERVER_PIDFILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'smsserver.pid')
 
 def create_connection():
     try:
-        con = sqlite3.connect(database=SMSSERVER_DB, timeout=5)
+        con = sqlite3.connect(SMSSERVER_DB, timeout=5)
     except sqlite3.Error as e:
         print(f"Não foi possível conectar-se ao banco de dados local '{SMSSERVER_DB}': {e}.")
 
@@ -29,9 +30,8 @@ class SMSServerDaemon(run.RunDaemon):
 if __name__ == '__main__':
     if len(sys.argv) >= 2:
         action = sys.argv[1]
-        pidfile = "/tmp/sleepy.pid"
 
-        d = SMSServerDaemon(pidfile=pidfile)
+        d = SMSServerDaemon(pidfile=SMSSERVER_PIDFILE)
 
         if action == "start":
             d.start()
@@ -61,16 +61,19 @@ CREATE TABLE IF NOT EXISTS sms_request (
     username VARCHAR(32) NOT NULL,
     number VARCHAR(16) NOT NULL,
     message VARCHAR(3000) NOT NULL,
+    state TINYINT NOT NULL DEFAULT 0,
+    date_requested TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (username) REFERENCES sms_client(username)
 );
 """)
             con.close()
         elif action == "useradd":
             if len(sys.argv) < 4:
-                print("É preciso informar USERNAME e PASSWORD.")
+                print(f"Uso:\n\n{sys.argv[0]} {sys.argv[1]} <auth_client> <password>")
             else:
                 con = create_connection()
                 assert con
+
                 cur = con.cursor()
                 cur.execute("INSERT INTO sms_client (username, password) VALUES (?, ?)", (sys.argv[2], sys.argv[3]))
                 con.commit()
@@ -78,6 +81,7 @@ CREATE TABLE IF NOT EXISTS sms_request (
         elif action == "userlist":
             con = create_connection()
             assert con
+
             cur = con.cursor()
             cur.execute("SELECT username FROM sms_client")
             row = cur.fetchone()
@@ -87,7 +91,38 @@ CREATE TABLE IF NOT EXISTS sms_request (
                 row = cur.fetchone()
             
             con.close()
+        elif action == "sendsms":
+            if len(sys.argv) < 5:
+                print(f"Uso:\n\n{sys.argv[0]} {sys.argv[1]} <auth_client> <number> <text>")
+            elif not d.pid:
+                print(f"O processo precisa estar executando para efetuar um '{action}'.")
+            else:
+                con = create_connection()
+                assert con
+
+                cur = con.cursor()
+                cur.execute("INSERT INTO sms_request (username, number, message) VALUES (?, ?, ?)", (sys.argv[2], sys.argv[3], ' '.join(sys.argv[4:])))
+                con.commit()
+                con.close()
+
+                print("Enviando SIGUSR1 para o processo em execução...")
+                os.kill(d.pid, signal.SIGUSR1)
+        elif action == "requests":
+            con = create_connection()
+            assert con
+
+            cur = con.cursor()
+            cur.execute("SELECT id, username, number, message, state, date_requested FROM sms_request WHERE state = 0 ORDER BY date_requested DESC")
+            row = cur.fetchone()
+            
+            while row:
+                for column in row:
+                    print(F"{column} ", end='')
+                print()
+                row = cur.fetchone()
+            
+            con.close()
         else:
             print(f"Operação '{action}' inválida.")
     else:
-        print(f"Uso:\n\n{sys.argv[0]} <start|stop|restart|refresh|createdb|useradd>")
+        print(f"Uso:\n\n{sys.argv[0]} <start|stop|restart|refresh|createdb|useradd|userlist|sendsms|requests>")
