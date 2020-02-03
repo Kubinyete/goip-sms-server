@@ -3,7 +3,7 @@
 import socket
 import sys
 import select
-import random
+import time
 import sqlite3
 from datetime import datetime
 from enum import Enum, auto
@@ -153,7 +153,7 @@ class SMSTransaction:
 
 class SMSAction:
     # @DEBUG: Apenas para testes, retirar isso e começar do 0
-    AUTO_INCREMENT = random.randint(1000, 65000)
+    AUTO_INCREMENT = 1
 
     def __init__(self, id, sms_client):
         self.id = id
@@ -161,7 +161,7 @@ class SMSAction:
 
     @staticmethod
     def generate_id():
-        if SMSAction.AUTO_INCREMENT == sys.maxsize:
+        if SMSAction.AUTO_INCREMENT == 65536:
             SMSAction.AUTO_INCREMENT = 0
 
         SMSAction.AUTO_INCREMENT += 1
@@ -187,6 +187,7 @@ class SMSAuthClient:
         self.username = username
         self.password = password
         self.connected = []
+        self.last_synced = 0
 
     def authenticate(self, username, password, srcaddr):
         if username != self.username or password != self.password:
@@ -230,11 +231,21 @@ class SMSClient:
 
     def update(self, package={}):
         self.num = package.get('num', '')
-        self.signal = int(package.get('signal', 0))
+        
+        try:
+            self.signal = int(package.get('signal', 0))
+        except ValueError:
+            pass
+        
         self.gsm_status = package.get('gsm_status', '')
         self.voip_status = package.get('voip_status', '')
         self.voip_state = package.get('voip_state', '')
-        self.remain_time = int(package.get('remain_time', -1))
+        
+        try:
+            self.remain_time = int(package.get('remain_time', -1))
+        except ValueError:
+            pass
+        
         self.imei = package.get('imei', '')
         self.imsi = package.get('imsi', '')
         self.iccid = package.get('iccid', '')
@@ -263,52 +274,61 @@ class SMSServer:
         
         self.do_refresh()
 
+    def cleanup_unsynchronized(self, timestamp):
+        for key, auth in self.auth_clients.items():
+            if auth.last_synced != timestamp:
+                del self.auth_clients[key]
+
     def fetch_authorized_clients(self, conn):
-        self.auth_clients.clear()
+        last_syncd = datetime.timestamp(datetime.now())
 
-        if conn:
-            cur = conn.cursor()
-            cur.execute("SELECT username, password FROM sms_client")
+        cur = conn.cursor()
+        cur.execute("SELECT username, password FROM sms_client")
 
+        row = cur.fetchone()
+        while row:
+            if not row[0] in self.auth_clients:
+                self.auth_clients[row[0]] = SMSAuthClient(row[0], row[1])
+            else:
+                self.auth_clients[row[0]].password = row[1]
+
+            self.auth_clients[row[0]].last_synced = last_syncd
             row = cur.fetchone()
-            while row:
-                if not row[0] in self.auth_clients:
-                    self.auth_clients[row[0]] = SMSAuthClient(row[0], row[1])
 
-                row = cur.fetchone()
+        cur.close()
 
-            cur.close()
+        self.cleanup_unsynchronized(last_syncd)
 
     def fetch_requests(self, conn):
-        if conn:
-            cur = conn.cursor()
-            cur.execute(f"SELECT id, username, number, message FROM sms_request WHERE state = {SMSRequestState.REQUESTED.value} ORDER BY date_requested DESC")
+        cur = conn.cursor()
+        cur.execute(f"SELECT id, username, number, message FROM sms_request WHERE state = {SMSRequestState.REQUESTED.value} ORDER BY date_requested DESC")
 
-            updt = conn.cursor()
-            row = cur.fetchone()
-            while row:
-                if row[1] in self.auth_clients:
-                    auth_client = self.auth_clients[row[1]]
+        updt = conn.cursor()
+        row = cur.fetchone()
+        while row:
+            if row[1] in self.auth_clients and self.auth_clients[row[1]].connected:
+                auth_client = self.auth_clients[row[1]]
 
-                    for sms_client in auth_client.connected:
-                        self.begin_transaction_for(
+                for sms_client in auth_client.connected:
+                    self.begin_transaction_for(
+                        sms_client, 
+                        SMSAction.get_sendsms_action(
                             sms_client, 
-                            SMSAction.get_sendsms_action(
-                                sms_client, 
-                                row[3], 
-                                [row[2]]
-                            )
+                            row[3], 
+                            [row[2]]
                         )
-
+                    )
+                    
                     updt.execute(f"UPDATE sms_request SET state = {SMSRequestState.PROCESSING.value} WHERE id = {row[0]}")
-                else:
-                    updt.execute(f"UPDATE sms_request SET state = {SMSRequestState.FAILED.value} WHERE id = {row[0]}")
+            else:
+                self.log(f"Ignorando novo pedido, ID inexistente ou nenhum cliente atualmente associado ao ID.")
+                updt.execute(f"UPDATE sms_request SET state = {SMSRequestState.FAILED.value} WHERE id = {row[0]}")
 
-                row = cur.fetchone()
+            row = cur.fetchone()
 
-            conn.commit()
-            updt.close()
-            cur.close()
+        conn.commit()
+        updt.close()
+        cur.close()
 
     def do_refresh(self):
         conn = None
@@ -513,6 +533,8 @@ class SMSServer:
                     consecutive_packages = 0
 
                     self.process_pending_transactions(self.soc)
+                    
+                    time.sleep(.1)
 
         except KeyboardInterrupt:
             self.log(f"Desligando socket...")
@@ -635,6 +657,3 @@ class SMSServer:
         return ";".join(
             [f"{key}:{value}" for key, value in kwvalues.items()]
         )
-
-if __name__ == '__main__':
-    SMSServer('', 44444).listen()
