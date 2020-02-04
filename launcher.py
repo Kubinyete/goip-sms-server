@@ -112,7 +112,7 @@ def cli_dbmanager(args):
     else:
         print(f"Uso:\n\n")
 
-        for use in ("create","useradd <username> <password>","userlist"):
+        for use in ("create","useradd <username> <password>", "userlist"):
             print(f"{sys.argv[0]} {args[0]} {use}")
 
 def cli_smsmanager(args, d):
@@ -128,8 +128,10 @@ def cli_smsmanager(args, d):
         db_createrequest(args[2], args[3], ' '.join(args[4:]))
 
         os.kill(d.pid, signal.SIGUSR1)
+    elif act == "pending":
+        fatal("A ser implementado.")
     else:
-        for use in ("send <auth_id> <number> <message>"):
+        for use in ("send <auth_id> <number> <message>", "pending"):
             print(f"{sys.argv[0]} {args[0]} {use}")
 
 if __name__ == '__main__':
