@@ -103,9 +103,11 @@ class SMSTransactionBundle:
         return ret
 
 class SMSTransaction:
-    def __init__(self, tid, sms_client, steps, timeout=60):
+    def __init__(self, dbid, tid, sms_client, action, steps, timeout=60):
+        self.db_id = dbid
         self.id = tid
         self.sms_client = sms_client
+        self.action = action
         self.steps = steps
         self.timeout = timeout
         self.start_time = datetime.timestamp(datetime.now())
@@ -216,6 +218,7 @@ class SMSClient:
         self.last_heartbeat = datetime.timestamp(datetime.now())
         self.expires = expires
         self.auth_client = auth_client
+        self.in_transaction = None
 
         # Define valores vazios
         self.update()
@@ -269,7 +272,7 @@ class SMSServer:
         
         self.auth_clients = {}
         self.pending_transactions = []
-    
+
         self.max_consecutive_packages = 5
 
         if logfile:
@@ -280,6 +283,8 @@ class SMSServer:
                 level=logging.DEBUG
             )
         
+        self.conn = self.get_connection()
+
         self.do_refresh()
 
     def cleanup_unsynchronized(self, timestamp):
@@ -309,28 +314,32 @@ class SMSServer:
 
     def fetch_requests(self, conn):
         cur = conn.cursor()
-        cur.execute(f"SELECT id, username, number, message FROM sms_request WHERE state = {SMSRequestState.REQUESTED.value} ORDER BY date_requested DESC")
+        cur.execute(f"SELECT req.id, req.username, reqn.number, req.message FROM sms_request AS req INNER JOIN sms_requestnumber AS reqn ON reqn.request_id = req.id WHERE req.state = {SMSRequestState.REQUESTED.value} ORDER BY date_requested DESC")
 
         updt = conn.cursor()
         row = cur.fetchone()
         while row:
+            self.log(F"ROW = {row}")
             if row[1] in self.auth_clients and self.auth_clients[row[1]].connected:
                 auth_client = self.auth_clients[row[1]]
-
                 for sms_client in auth_client.connected:
-                    self.begin_transaction_for(
-                        sms_client, 
-                        SMSAction.get_sendsms_action(
+                    if not sms_client.in_transaction:
+                        self.begin_transaction_for(
+                            row[0],
                             sms_client, 
-                            row[3], 
-                            [row[2]]
+                            SMSAction.get_sendsms_action(
+                                sms_client, 
+                                row[3], 
+                                [row[2]]
+                            )
                         )
-                    )
-                    
-                    updt.execute(f"UPDATE sms_request SET state = {SMSRequestState.PROCESSING.value} WHERE id = {row[0]}")
+                        updt.execute("UPDATE sms_requestnumber SET state = ? WHERE request_id = ? AND number = ?", (SMSRequestState.PROCESSING.value, row[0], row[2]))
+                        break                    
+
+                updt.execute("UPDATE sms_request SET state = ? WHERE id = ? AND state = ?", (SMSRequestState.PROCESSING.value, row[0], SMSRequestState.REQUESTED.value))
             else:
                 self.log(f"Ignorando novo pedido, ID inexistente ou nenhum cliente atualmente associado ao ID.")
-                updt.execute(f"UPDATE sms_request SET state = {SMSRequestState.FAILED.value} WHERE id = {row[0]}")
+                updt.execute("UPDATE sms_request SET state = ? WHERE id = ? AND state = ?", (SMSRequestState.FAILED.value, row[0], SMSRequestState.REQUESTED.value))
 
             row = cur.fetchone()
 
@@ -338,22 +347,36 @@ class SMSServer:
         updt.close()
         cur.close()
 
-    def do_refresh(self):
-        conn = None
-    
+    def update_transaction_number_status(self, conn, transaction, state):
+        cur = conn.cursor()
+        cur.execute("UPDATE sms_requestnumber SET state = ? WHERE request_id = ? AND number = ?", (state.value, transaction.db_id, transaction.action.numbers[-1]))
+        conn.commit()
+        cur.close()
+
+    def update_transaction_status(self, conn, transaction, state):
+        cur = conn.cursor()
+        cur.execute("UPDATE sms_request SET state = ? WHERE id = ? AND NOT EXISTS (SELECT * FROM sms_requestnumber WHERE request_id = ? AND state = ?)", (state.value, transaction.db_id, transaction.db_id, SMSRequestState.REQUESTED.value))
+        conn.commit()
+        cur.close()
+
+    def get_connection(self):
         try:
-            conn = sqlite3.connect(
+            return sqlite3.connect(
                 self.database,
                 timeout=5
             )
-
-            self.fetch_authorized_clients(conn)
-            self.fetch_requests(conn)
         except sqlite3.Error as e:
             self.log(f"Não foi possível conectar-se ao banco de dados local '{self.database}': {e}", level=logging.ERROR)
-        finally:
-            if conn:
-                conn.close()
+
+    def do_refresh(self):
+        self.log("Recebido pedido de SYNC, atualizando estado interno...")
+
+        if self.conn:
+            try:
+                self.fetch_authorized_clients(self.conn)
+                self.fetch_requests(self.conn)
+            except sqlite3.Error as e:
+                self.log(f"Ocorreu um erro durante a execução do do_refresh: {e}", level=logging.ERROR)
 
     def log(self, message, srcaddr=None, level=logging.DEBUG):
         logging.log(level, f"<{srcaddr[0]}:{srcaddr[1]}> {message}" if srcaddr else message)
@@ -412,16 +435,16 @@ class SMSServer:
                         })
                     else:
                         self.log(f"Falha na autenticação do ID '{package['id']}': Senha incorreta.", src, level=logging.INFO)
-                        sms_client.send_package(self.soc, {
-                            "reg": package['req'],
-                            "status": 403
-                        })
+                        #sms_client.send_package(self.soc, {
+                        #    "reg": package['req'],
+                        #    "status": 403
+                        #})
                 else:
                     self.log(f"Falha na autenticação do ID '{package['id']}': Usuário inexistente.", src, level=logging.INFO)
-                    sms_client.send_package(self.soc, {
-                            "reg": package['req'],
-                            "status": 403
-                        })
+                    #sms_client.send_package(self.soc, {
+                    #        "reg": package['req'],
+                    #        "status": 403
+                    #    })
 
     def process_pending_transactions(self, currsocket):
         for transaction in self.pending_transactions:
@@ -431,17 +454,23 @@ class SMSServer:
                 if currstep:
                     self.process_transaction_step(currsocket, transaction, currstep)
                 else:
-                    # Nenhum pacote na transação?
-                    self.log(f"Nenhum pacote na transação {transaction.id}, removendo.", srcaddr=transaction.sms_client.srcaddr, level=logging.INFO)
-                    self.pending_transactions.remove(transaction)
+                    # Nenhum pacote na transação, finalizdo com sucesso
+                    self.log(f"Transação {transaction.id} finalizada, removendo.", srcaddr=transaction.sms_client.srcaddr, level=logging.INFO)
+                    self.end_transaction_for(transaction, SMSRequestState.DONE)
             else:
                 self.log(f"Transação {transaction.id} morta, timeout alcançado.'", srcaddr=transaction.sms_client.srcaddr, level=logging.INFO)
-                self.pending_transactions.remove(transaction)
+                self.end_transaction_for(transaction, SMSRequestState.FAILED)
 
     def process_transaction_step(self, currsocket, transaction, currstep):
         if isinstance(currstep, SMSTransactionBundle):
             if currstep.valid_response():
                 self.log(F"Finalizando SMSTransactionBundle: {currstep}", srcaddr=transaction.sms_client.srcaddr, level=logging.INFO)
+                
+                # Reporte o estado de todos os números
+                if self.conn:
+                    for step in currstep.steps:
+                        self.update_transaction_number_status(self.conn, transaction, SMSRequestState.DONE if step.rxpacket[-1].action == "OK" else SMSRequestState.FAILED)
+
                 transaction.pop_current_step()
             else:
                 previous = None
@@ -467,25 +496,11 @@ class SMSServer:
                     response_is_valid = currstep.valid_response()
 
                     if received_packet.action == "ERROR" and not response_is_valid:
-                        self.log(f"Recebido packet de ERROR na transação {transaction.id}, ignorando: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}, RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
+                        self.log(f"Recebido packet de ERROR na transação {transaction.id}: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}, RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
                         #self.pending_transactions.remove(transaction)
-                        transaction.pop_current_step()
+                        #transaction.pop_current_step()
+                        self.end_transaction_for(transaction, SMSRequestState.FAILED)
                     else:
-                        # if response_is_valid:
-                        #     if received_packet.action == "WAIT":
-                        #         self.log(f"Recebido packet de WAIT na transação {transaction.id}, esperando resposta: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}, RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
-                        #         currstep.rxpacket = [] if isinstance(currstep, SMSTransactionBundleStep) else None
-                        #     else:
-                        #         if not isinstance(currstep, SMSTransactionBundleStep):
-                        #             transaction.pop_current_step()
-                        #         else:
-                        #             # Sou um BundleStep, só posso finalizar o Bundle, quando todos os pacotes forem finalizados, e quem gerência essa finalização é o Bundle e não o próprio Step.
-                        #             pass
-                        # else:
-                        #     if not isinstance(currstep, SMSTransactionBundleStep):
-                        #         self.log(f"Resposta não aprovada na transação {transaction.id}, cancelando transação: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}, RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
-                        #         self.pending_transactions.remove(transaction)
-
                         if received_packet.action != "WAIT":
                             if response_is_valid:
                                 if not isinstance(currstep, SMSTransactionBundleStep):
@@ -497,7 +512,7 @@ class SMSServer:
                             else:
                                 #if not isinstance(currstep, SMSTransactionBundleStep):
                                 self.log(f"Resposta não aprovada na transação {transaction.id}, cancelando transação: TX: {currstep.txpacket.action} {' '.join(string_values(currstep.txpacket.args))}, RX: {received_packet.action} {' '.join(received_packet.args)}", srcaddr=transaction.sms_client.srcaddr)
-                                self.pending_transactions.remove(transaction)
+                                self.end_transaction_for(transaction, SMSRequestState.FAILED)
 
     def listen(self):
         self.log(f"Escutando em '{self.bindaddr}', porta {self.port}...", level=logging.INFO)
@@ -549,11 +564,21 @@ class SMSServer:
     def stop(self):
         self.soc.close()
 
-    def begin_transaction_for(self, sms_client, action, timeout=60):
+    def begin_transaction_for(self, transaction_id, sms_client, action, timeout=60):
         self.log(f"Iniciando transação {action.id} para {type(action).__name__}, message='{action.message}', numbers={action.numbers}", srcaddr=sms_client.srcaddr)
 
-        transaction = SMSTransaction(action.id, sms_client, self.generate_steps_for(action), timeout=timeout)
+        transaction = SMSTransaction(transaction_id, action.id, sms_client, action, self.generate_steps_for(action), timeout=timeout)
         self.pending_transactions.append(transaction)
+        
+        sms_client.in_transaction = transaction
+
+    def end_transaction_for(self, transaction, transaction_state):
+        self.pending_transactions.remove(transaction)
+
+        transaction.sms_client.in_transaction = None
+
+        if self.conn:
+            self.update_transaction_status(self.conn, transaction, transaction_state)
 
     @staticmethod
     def is_packet(data):
