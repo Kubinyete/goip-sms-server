@@ -18,27 +18,27 @@ Esse servidor foi construido para fins de aprendizado, nenhum dos componentes of
 
 ## Uso
 
-```sh
+```console
 vitor@ubuntu $ ./launcher.py
 Uso:
 
-./launcher.py <start|stop|restart|db|sms> [arg1] [arg2]...
+./launcher.py <start|stop|restart|sync|db|sms> [arg1] [arg2]...
 ```
 
 Para começar será necessário inicializar o banco de dados SQLite local:
 
-```sh
+```console
 vitor@ubuntu $ ./launcher.py db create
 ```
 
 Feito isso, será preciso adicionar pelo menos um usuário para autenticação:
 
-```sh
+```console
 vitor@ubuntu $ ./launcher.py db useradd meuusuario minhasenha
 ```
 
 Após iniciarmos o servidor e a linha se registrar com o servidor, será possível registrar um pedido de envio de SMS:
 
-```sh
-vitor@ubuntu $ ./launcher.py sms send meuusuario 18999993333 minha mensagem será concatenada
+```console
+vitor@ubuntu $ ./launcher.py sms send meuusuario "minha mensagem será concatenada" 18999993333 18999993334 18999993335
 ```
