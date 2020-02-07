@@ -5,6 +5,7 @@ import select
 import time
 import logging
 import sqlite3
+import math
 from datetime import datetime
 from enum import Enum, auto
 
@@ -103,12 +104,12 @@ class SMSTransactionBundle:
         return ret
 
 class SMSTransaction:
-    def __init__(self, dbid, tid, sms_client, action, steps, timeout=60):
-        self.db_id = dbid
-        self.id = tid
-        self.sms_client = sms_client
+    def __init__(self, action, timeout=60):
+        self.db_id = action.db_id
+        self.id = action.id
+        self.sms_client = action.sms_client
         self.action = action
-        self.steps = steps
+        self.steps = SMSTransaction.generate_steps_for(action)
         self.timeout = timeout
         self.start_time = datetime.timestamp(datetime.now())
         self.last_time = self.start_time
@@ -143,6 +144,59 @@ class SMSTransaction:
     def is_alive(self):
         return self.last_time + self.timeout > datetime.timestamp(datetime.now())
 
+    @staticmethod
+    def generate_steps_for(action):
+        if isinstance(action, SendSMSAction):
+            def callback_all_sends_finished(steps):
+                num_finished = 0
+
+                for step in steps.steps:
+                    if step.txpacket.state is SMSPacketState.SENT and step.rxpacket and step.valid_response():
+                        num_finished += 1
+
+                return num_finished == len(steps.steps)
+
+            steps = [
+                SMSTransactionStep(
+                    SMSPacket("MSG", args=[
+                            action.id, 
+                            len(action.message.encode('utf-8')), 
+                            action.message
+                        ]
+                    ), lambda x: x.action == "PASSWORD"),
+                SMSTransactionStep(
+                    SMSPacket("PASSWORD", args=[
+                            action.id, 
+                            action.sms_client.auth_client.password
+                        ]
+                    ), lambda x: x.action == "SEND"),
+                SMSTransactionBundle(
+                    [
+                        SMSTransactionBundleStep(
+                            SMSPacket("SEND", args=[
+                                    action.id, 
+                                    i + 1, 
+                                    action.numbers[i]
+                                ]
+                            ), 
+                            lambda x: x.action == "OK" or x.action == "ERROR"
+                        ) for i in range(len(action.numbers))
+                    ],
+                    callback_all_sends_finished
+                ),
+                SMSTransactionStep(
+                    SMSPacket("DONE", args=[
+                            action.id
+                        ]
+                    ), 
+                    lambda x: x.action == "DONE"
+                )
+            ]
+        else:
+            raise ValueError("Não é possível gerar os passos de uma action desconhecida.")
+
+        return steps
+
     def __str__(self):
         ret = f"SMSTransaction: [\n"
         
@@ -157,8 +211,8 @@ class SMSAction:
     # @DEBUG: Apenas para testes, retirar isso e começar do 0
     AUTO_INCREMENT = 0
 
-    def __init__(self, id, sms_client):
-        self.id = id
+    def __init__(self, sms_client):
+        self.id = SMSAction.generate_id()
         self.sms_client = sms_client
 
     @staticmethod
@@ -170,13 +224,10 @@ class SMSAction:
 
         return SMSAction.AUTO_INCREMENT
 
-    @staticmethod
-    def get_sendsms_action(sms_client, message, numbers):
-        return SendSMSAction(SMSAction.generate_id(), sms_client, message, numbers)
-
 class SendSMSAction(SMSAction):
-    def __init__(self, id, sms_client, message, numbers):
-        super().__init__(id, sms_client)
+    def __init__(self, db_id, sms_client, message, numbers):
+        super().__init__(sms_client)
+        self.db_id = db_id
 
         if message and numbers and len(message.encode('utf-8')) <= 3000:
             self.message = message
@@ -272,6 +323,7 @@ class SMSServer:
         
         self.auth_clients = {}
         self.pending_transactions = []
+        self.action_queue = []
 
         self.max_consecutive_packages = 5
 
@@ -318,27 +370,30 @@ class SMSServer:
 
         updt = conn.cursor()
         row = cur.fetchone()
+
+        contexts = []
+
         while row:
             self.log(F"ROW = {row}")
+
             if row[1] in self.auth_clients and self.auth_clients[row[1]].connected:
                 auth_client = self.auth_clients[row[1]]
-                for sms_client in auth_client.connected:
-                    if not sms_client.in_transaction:
-                        self.begin_transaction_for(
-                            row[0],
-                            sms_client, 
-                            SMSAction.get_sendsms_action(
-                                sms_client, 
-                                row[3], 
-                                [row[2]]
-                            )
-                        )
-                        updt.execute("UPDATE sms_requestnumber SET state = ? WHERE request_id = ? AND number = ?", (SMSRequestState.PROCESSING.value, row[0], row[2]))
-                        break                    
 
+                if not contexts or contexts[-1][0] != row[0]:
+                    contexts.append(
+                        # ID, Auth, Mensagem, Numeros
+                        (row[0], auth_client, row[3], [row[2]])
+                    )
+                else:
+                    # Adiciona mais um número à mesma mensagem
+                    contexts[-1][3].append(row[2])
+
+                # Possivelmente ruim para performance?
+                updt.execute("UPDATE sms_requestnumber SET state = ? WHERE request_id = ? AND number = ?", (SMSRequestState.PROCESSING.value, row[0], row[2]))
                 updt.execute("UPDATE sms_request SET state = ? WHERE id = ? AND state = ?", (SMSRequestState.PROCESSING.value, row[0], SMSRequestState.REQUESTED.value))
             else:
                 self.log(f"Ignorando novo pedido, ID inexistente ou nenhum cliente atualmente associado ao ID.")
+                # Possivelmente ruim para performance?
                 updt.execute("UPDATE sms_request SET state = ? WHERE id = ? AND state = ?", (SMSRequestState.FAILED.value, row[0], SMSRequestState.REQUESTED.value))
 
             row = cur.fetchone()
@@ -347,15 +402,52 @@ class SMSServer:
         updt.close()
         cur.close()
 
-    def update_transaction_number_status(self, conn, transaction, state):
+        self.log(f"CONTEXTS = {contexts}")
+
+        for ctx in contexts:
+            auth_client = ctx[1]
+            nums_perclient = math.ceil(len(ctx[3]) / len(auth_client.connected))
+            nums_floor = 0
+
+            for sms_client in auth_client.connected:
+                # Vamos espalhar o peso dos SMSs, de acordo coma disponibilidade de linhas
+                # Ex: Temos 16 solicitaões de números diferentes para a mesma mensagem, porém apenas 4 linhas
+                # Portato, cada linha tentará a mesma mensagem para 4 números diferentes na mesma transação.
+                self.action_queue.append(
+                    SendSMSAction(
+                        ctx[0],
+                        sms_client,
+                        ctx[2],
+                        ctx[3][nums_floor:nums_floor + nums_perclient]
+                    )
+                )
+
+                nums_floor += nums_perclient
+
+                if nums_floor >= len(ctx[3]):
+                    break
+
+        self.log(f"Foram enviadas {len(contexts)} novas solicitações para a action_queue!")
+
+    def update_transaction_number_status(self, conn, transaction, stepbundle):
         cur = conn.cursor()
-        cur.execute("UPDATE sms_requestnumber SET state = ? WHERE request_id = ? AND number = ?", (state.value, transaction.db_id, transaction.action.numbers[-1]))
+        
+        for step in stepbundle.steps:
+            cur.execute("UPDATE sms_requestnumber SET state = ? WHERE request_id = ? AND number = ?", 
+                (
+                    SMSRequestState.DONE.value if step.rxpacket[-1].action == "OK" else SMSRequestState.FAILED.value, 
+                    transaction.db_id, 
+                    step.txpacket.args[2]
+                )
+            )
+        
         conn.commit()
         cur.close()
 
     def update_transaction_status(self, conn, transaction, state):
         cur = conn.cursor()
-        cur.execute("UPDATE sms_request SET state = ? WHERE id = ? AND NOT EXISTS (SELECT * FROM sms_requestnumber WHERE request_id = ? AND state = ?)", (state.value, transaction.db_id, transaction.db_id, SMSRequestState.REQUESTED.value))
+        # @FIXME: Caso as transações falhem de começo, o estado delas não vai para FAILED, verificar o porquê
+        cur.execute("UPDATE sms_request SET state = ? WHERE id = ? AND state = ?", (state.value, transaction.db_id, SMSRequestState.REQUESTED.value))
         conn.commit()
         cur.close()
 
@@ -446,6 +538,10 @@ class SMSServer:
                     #        "status": 403
                     #    })
 
+    def process_action_queue(self):
+        if self.action_queue:
+            self.begin_transaction_for(self.action_queue.pop(0))
+
     def process_pending_transactions(self, currsocket):
         for transaction in self.pending_transactions:
             if transaction.is_alive():
@@ -468,8 +564,7 @@ class SMSServer:
                 
                 # Reporte o estado de todos os números
                 if self.conn:
-                    for step in currstep.steps:
-                        self.update_transaction_number_status(self.conn, transaction, SMSRequestState.DONE if step.rxpacket[-1].action == "OK" else SMSRequestState.FAILED)
+                    self.update_transaction_number_status(self.conn, transaction, currstep)
 
                 transaction.pop_current_step()
             else:
@@ -553,6 +648,7 @@ class SMSServer:
                 else:
                     consecutive_packages = 0
 
+                    self.process_action_queue()
                     self.process_pending_transactions(self.soc)
                     
                     time.sleep(.1)
@@ -564,13 +660,13 @@ class SMSServer:
     def stop(self):
         self.soc.close()
 
-    def begin_transaction_for(self, transaction_id, sms_client, action, timeout=60):
-        self.log(f"Iniciando transação {action.id} para {type(action).__name__}, message='{action.message}', numbers={action.numbers}", srcaddr=sms_client.srcaddr)
+    def begin_transaction_for(self, action, timeout=180):
+        self.log(f"Iniciando transação ID = {action.id}, DB_ID = {action.db_id} para {type(action).__name__}, message='{action.message}', numbers={action.numbers}", srcaddr=action.sms_client.srcaddr)
 
-        transaction = SMSTransaction(transaction_id, action.id, sms_client, action, self.generate_steps_for(action), timeout=timeout)
+        transaction = SMSTransaction(action, timeout=timeout)
         self.pending_transactions.append(transaction)
         
-        sms_client.in_transaction = transaction
+        action.sms_client.in_transaction = transaction
 
     def end_transaction_for(self, transaction, transaction_state):
         self.pending_transactions.remove(transaction)
@@ -598,59 +694,6 @@ class SMSServer:
             "DONE",
             "ERROR"
         )
-
-    @staticmethod
-    def generate_steps_for(action):
-        if isinstance(action, SendSMSAction):
-            def callback_all_sends_finished(steps):
-                num_finished = 0
-
-                for step in steps.steps:
-                    if step.txpacket.state is SMSPacketState.SENT and step.rxpacket and step.valid_response():
-                        num_finished += 1
-
-                return num_finished == len(steps.steps)
-
-            steps = [
-                SMSTransactionStep(
-                    SMSPacket("MSG", args=[
-                            action.id, 
-                            len(action.message.encode('utf-8')), 
-                            action.message
-                        ]
-                    ), lambda x: x.action == "PASSWORD"),
-                SMSTransactionStep(
-                    SMSPacket("PASSWORD", args=[
-                            action.id, 
-                            action.sms_client.auth_client.password
-                        ]
-                    ), lambda x: x.action == "SEND"),
-                SMSTransactionBundle(
-                    [
-                        SMSTransactionBundleStep(
-                            SMSPacket("SEND", args=[
-                                    action.id, 
-                                    i + 1, 
-                                    action.numbers[i]
-                                ]
-                            ), 
-                            lambda x: x.action == "OK" or x.action == "ERROR"
-                        ) for i in range(len(action.numbers))
-                    ],
-                    callback_all_sends_finished
-                ),
-                SMSTransactionStep(
-                    SMSPacket("DONE", args=[
-                            action.id
-                        ]
-                    ), 
-                    lambda x: x.action == "DONE"
-                )
-            ]
-        else:
-            raise ValueError("Não é possível gerar os passos de uma action desconhecida.")
-
-        return steps
 
     @staticmethod
     def parse_packet(data):
