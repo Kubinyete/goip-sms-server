@@ -1,6 +1,6 @@
-# Simple SMS Server (goip-sms-server)
+# Simple SMS Server
 
-Primeiro projeto em sockets com o objetivo de criar um mini-servidor (singlethreaded por enquanto) de SMS para comunicação com a interface de SMS dos GoIPs, para mais informações sobre o funcionamento dessa interface veja um outro projeto [https://github.com/iivorait/FSG-GOIP-snippet](FSG-GOIP-snipper) e a documentação da interface [https://github.com/iivorait/FSG-GOIP-snippet/blob/master/doc/goip_sms_Interface_en.pdf](aqui).
+Primeiro projeto em sockets com o objetivo de criar um mini-servidor (singlethreaded por enquanto) de SMS para comunicação com a interface de SMS dos GoIPs, para mais informações sobre o funcionamento dessa interface veja um outro projeto [FSG-GOIP-snipper](https://github.com/iivorait/FSG-GOIP-snippet) e a documentação da interface [aqui](https://github.com/iivorait/FSG-GOIP-snippet/blob/master/doc/goip_sms_Interface_en.pdf).
 
 ## Sobre
 
@@ -40,5 +40,5 @@ vitor@ubuntu $ ./launcher.py db useradd meuusuario minhasenha
 Após iniciarmos o servidor e a linha se registrar com o servidor, será possível registrar um pedido de envio de SMS:
 
 ```console
-vitor@ubuntu $ ./launcher.py sms send meuusuario "minha mensagem será concatenada" 18999993333 18999993334 18999993335
+vitor@ubuntu $ ./launcher.py sms send meuusuario "texto" 18999993333 11999993334
 ```

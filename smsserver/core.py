@@ -527,20 +527,15 @@ class SMSServer:
                         })
                     else:
                         self.log(f"Falha na autenticação do ID '{package['id']}': Senha incorreta.", src, level=logging.INFO)
-                        #sms_client.send_package(self.soc, {
-                        #    "reg": package['req'],
-                        #    "status": 403
-                        #})
                 else:
                     self.log(f"Falha na autenticação do ID '{package['id']}': Usuário inexistente.", src, level=logging.INFO)
-                    #sms_client.send_package(self.soc, {
-                    #        "reg": package['req'],
-                    #        "status": 403
-                    #    })
 
     def process_action_queue(self):
         if self.action_queue:
-            self.begin_transaction_for(self.action_queue.pop(0))
+            target_client = self.action_queue[0].sms_client
+
+            if not target_client.in_transaction:
+                self.begin_transaction_for(self.action_queue.pop(0))
 
     def process_pending_transactions(self, currsocket):
         for transaction in self.pending_transactions:

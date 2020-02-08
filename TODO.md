@@ -1,6 +1,5 @@
 # TODO
 
-* Implementação de log com a utilização de arquivos aon invés de jogar na STDOUT (causa problemas e o STDOUT continua ligado ao terminal que iniciou o daemon)
 * Utilização de mais de uma thread (verificar possiblidade, efetuar alterações necessárias)
 
 ## Lembretes
